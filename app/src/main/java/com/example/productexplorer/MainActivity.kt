@@ -1,5 +1,11 @@
 package com.example.productexplorer
 
+// Version fusionnée des TP8, TP9, TP10 et TP11.
+// Le code suit la progression demandée : interactions locales (TP8),
+// State Hoisting (TP9), ViewModel (TP10), puis StateFlow (TP11).
+// Dans cette version finale, l'état des TP précédents est centralisé
+// dans ProductCatalogViewModel via ProductCatalogUiState et StateFlow.
+
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,7 +19,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.*
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -27,10 +32,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.wear.compose.material.Scaffold
+import androidx.compose.ui.unit.dp
 import com.example.productexplorer.ui.theme.ProductExplorerTheme
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 // TP4 + TP6 : modèle produit
 data class ProductUi(
@@ -111,27 +124,6 @@ fun sampleProducts(): List<ProductUi> {
 
 fun sampleCategories(): List<String> {
     return listOf("Smartphones", "Audio", "Wearables", "Maison")
-}
-
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        setContent {
-            ProductExplorerTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    // TP6 + TP7 : c’est le catalogue qui s’affiche au lancement.
-                    ProductCatalogScreen(
-                        products = sampleProducts(),
-                        onProductClick = {
-                            // Plus tard : ouvrir le détail du produit.
-                        },
-                        modifier = Modifier.padding(innerPadding)
-                    )
-                }
-            }
-        }
-    }
 }
 
 // TP4 : écran de détail conservé dans le projet
@@ -490,10 +482,112 @@ fun DailyOfferBox(modifier: Modifier = Modifier) {
     }
 }
 
-// TP6 + TP7 : écran catalogue
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            ProductExplorerTheme {
+                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                    ProductCatalogContainer(onProductClick = {}, modifier = Modifier.padding(innerPadding))
+                }
+            }
+        }
+    }
+}
+
+
+data class ProductCatalogUiState(
+    val products: List<ProductUi> = emptyList(),
+    val categories: List<String> = emptyList(),
+    val searchQuery: String = "",
+    val showOnlyInStock: Boolean = false,
+    val favoriteProductIds: List<Int> = emptyList()
+)
+
+class ProductCatalogViewModel : ViewModel() {
+    private val allProducts: List<ProductUi> = sampleProducts()
+    private val allCategories: List<String> = sampleCategories()
+
+    private val _uiState = MutableStateFlow(
+        ProductCatalogUiState(products = allProducts, categories = allCategories)
+    )
+    val uiState: StateFlow<ProductCatalogUiState> = _uiState.asStateFlow()
+
+    private fun filterProducts(searchQuery: String, showOnlyInStock: Boolean): List<ProductUi> {
+        return allProducts.filter { product ->
+            val matchesSearch =
+                product.title.contains(searchQuery, ignoreCase = true) ||
+                        product.brand.contains(searchQuery, ignoreCase = true) ||
+                        product.category.contains(searchQuery, ignoreCase = true)
+            val matchesStock = !showOnlyInStock || product.stock > 0
+            matchesSearch && matchesStock
+        }
+    }
+
+    fun onSearchQueryChange(newValue: String) {
+        _uiState.update { currentState ->
+            currentState.copy(
+                searchQuery = newValue,
+                products = filterProducts(newValue, currentState.showOnlyInStock)
+            )
+        }
+    }
+
+    fun onToggleStockFilter() {
+        _uiState.update { currentState ->
+            val newShowOnlyInStock = !currentState.showOnlyInStock
+            currentState.copy(
+                showOnlyInStock = newShowOnlyInStock,
+                products = filterProducts(currentState.searchQuery, newShowOnlyInStock)
+            )
+        }
+    }
+
+    fun onFavoriteClick(productId: Int) {
+        _uiState.update { currentState ->
+            val newFavoriteIds = if (currentState.favoriteProductIds.contains(productId)) {
+                currentState.favoriteProductIds - productId
+            } else {
+                currentState.favoriteProductIds + productId
+            }
+            currentState.copy(favoriteProductIds = newFavoriteIds)
+        }
+    }
+}
+
+@Composable
+fun ProductCatalogContainer(
+    onProductClick: (ProductUi) -> Unit,
+    modifier: Modifier = Modifier,
+    viewModel: ProductCatalogViewModel = viewModel()
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    ProductCatalogScreen(
+        products = uiState.products,
+        categories = uiState.categories,
+        searchQuery = uiState.searchQuery,
+        onSearchQueryChange = viewModel::onSearchQueryChange,
+        showOnlyInStock = uiState.showOnlyInStock,
+        onToggleStockFilter = viewModel::onToggleStockFilter,
+        favoriteProductIds = uiState.favoriteProductIds,
+        onFavoriteClick = viewModel::onFavoriteClick,
+        onProductClick = onProductClick,
+        modifier = modifier
+    )
+}
+
 @Composable
 fun ProductCatalogScreen(
     products: List<ProductUi>,
+    categories: List<String>,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    showOnlyInStock: Boolean,
+    onToggleStockFilter: () -> Unit,
+    favoriteProductIds: List<Int>,
+    onFavoriteClick: (Int) -> Unit,
     onProductClick: (ProductUi) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -518,14 +612,36 @@ fun ProductCatalogScreen(
             )
         }
         item {
-            CategoryRow(categories = sampleCategories())
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                label = { Text(text = "Rechercher un produit") },
+                modifier = Modifier.fillMaxWidth()
+            )
         }
-        items(
-            items = products,
-            key = { product -> product.id }
-        ) { product ->
+        item {
+            Button(onClick = onToggleStockFilter) {
+                Text(
+                    text = if (showOnlyInStock) {
+                        "Afficher tous les produits"
+                    } else {
+                        "Afficher uniquement les produits en stock"
+                    }
+                )
+            }
+        }
+        item {
+            Text(
+                text = "${products.size} produit(s) affiché(s)",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        item { CategoryRow(categories = categories) }
+        items(items = products, key = { product -> product.id }) { product ->
             ProductListItem(
                 product = product,
+                isFavorite = favoriteProductIds.contains(product.id),
+                onFavoriteClick = { onFavoriteClick(product.id) },
                 onClick = { onProductClick(product) }
             )
         }
@@ -533,16 +649,24 @@ fun ProductCatalogScreen(
 }
 
 @Composable
-fun CategoryRow(
-    categories: List<String>,
-    modifier: Modifier = Modifier
-) {
+fun CategoryRow(categories: List<String>) {
     LazyRow(
-        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         items(categories) { category ->
-            CategoryChip(label = category)
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer
+            ) {
+                Text(
+                    text = category,
+                    modifier = Modifier.padding(
+                        horizontal = 16.dp,
+                        vertical = 8.dp
+                    ),
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
         }
     }
 }
@@ -550,48 +674,63 @@ fun CategoryRow(
 @Composable
 fun ProductListItem(
     product: ProductUi,
+    isFavorite: Boolean,
+    onFavoriteClick: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = product.title,
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = product.brand,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.secondary
-            )
+            Text(product.title, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(product.brand, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "${product.price} € • ★ ${product.rating}",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Text("${product.price} € • ★ ${product.rating}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Text("${product.stock} en stock", style = MaterialTheme.typography.bodyMedium)
             Spacer(modifier = Modifier.height(8.dp))
-            Button(onClick = onClick) {
-                Text(text = "Voir le produit")
+            Button(onClick = onFavoriteClick) {
+                Text(if (isFavorite) "Retirer des favoris" else "Ajouter aux favoris")
             }
+            Button(onClick = onClick) { Text("Voir le produit") }
         }
     }
 }
 
-@Preview(showBackground = true)
+@Preview(showBackground = true, name = "Catalogue - Light Theme")
 @Composable
-fun ProductCatalogScreenPreview() {
-    ProductExplorerTheme {
+fun ProductCatalogScreenLightPreview() {
+    ProductExplorerTheme(darkTheme = false) {
         ProductCatalogScreen(
             products = sampleProducts(),
+            categories = sampleCategories(),
+            searchQuery = "",
+            onSearchQueryChange = {},
+            showOnlyInStock = false,
+            onToggleStockFilter = {},
+            favoriteProductIds = listOf(1),
+            onFavoriteClick = {},
+            onProductClick = {}
+        )
+    }
+}
+
+@Preview(showBackground = true, name = "Catalogue - Dark Theme")
+@Composable
+fun ProductCatalogScreenDarkPreview() {
+    ProductExplorerTheme(darkTheme = true) {
+        ProductCatalogScreen(
+            products = sampleProducts(),
+            categories = sampleCategories(),
+            searchQuery = "audio",
+            onSearchQueryChange = {},
+            showOnlyInStock = true,
+            onToggleStockFilter = {},
+            favoriteProductIds = listOf(2),
+            onFavoriteClick = {},
             onProductClick = {}
         )
     }
